@@ -1,0 +1,13 @@
+{
+  "name": "tweet-watcher",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Watches twitterwebviewer.com search results for keywords and sends new tweets to a Telegram bot.",
+  "scripts": {
+    "start": "node src/scrape.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0"
+  }
+}

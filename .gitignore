@@ -1,0 +1,7 @@
+node_modules/
+.env
+*.log
+
+# Keywords live in the KEYWORDS secret so the watchlist stays private.
+# keywords.json is for local dev only and must never be committed.
+keywords.json
