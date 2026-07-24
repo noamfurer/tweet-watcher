@@ -85,20 +85,23 @@ function escapeHtml(s) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function sendTelegram(html) {
+async function sendTelegram(html, replyMarkup) {
   if (!TOKEN || !CHAT) {
     console.log('[telegram] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — printing instead:\n' + html + '\n');
+    if (replyMarkup) console.log('[telegram] (button) ' + JSON.stringify(replyMarkup) + '\n');
     return;
   }
+  const payload = {
+    chat_id: CHAT,
+    text: html,
+    parse_mode: 'HTML',
+    disable_web_page_preview: false,
+  };
+  if (replyMarkup) payload.reply_markup = replyMarkup;
   const res = await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: CHAT,
-      text: html,
-      parse_mode: 'HTML',
-      disable_web_page_preview: false,
-    }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     console.error('[telegram] send failed', res.status, await res.text().catch(() => ''));
@@ -115,6 +118,15 @@ function formatTweet(keyword, t) {
     `${body}\n\n` +
     `${t.url}`
   );
+}
+
+// A "share on WhatsApp" inline button: opens WhatsApp pre-filled with the tweet
+// text + link (via https://wa.me/?text=...). Text is capped so the button URL
+// stays within Telegram's limits.
+function whatsappButton(t) {
+  const shareText = `${(t.text || '').slice(0, 300)}\n\n${t.url}`.trim();
+  const url = 'https://wa.me/?text=' + encodeURIComponent(shareText);
+  return { inline_keyboard: [[{ text: '📲 שליחה בוואטסאפ', url }]] };
 }
 
 // ---------- scraping ----------
@@ -250,7 +262,7 @@ async function main() {
     } else {
       const toNotify = fresh.slice(0, MAX_NOTIFY_PER_KEYWORD);
       for (const t of toNotify) {
-        await sendTelegram(formatTweet(keyword, t));
+        await sendTelegram(formatTweet(keyword, t), whatsappButton(t));
         totalNew++;
       }
       if (fresh.length > MAX_NOTIFY_PER_KEYWORD) {
