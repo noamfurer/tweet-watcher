@@ -2,10 +2,12 @@ name: tweet-watcher
 
 on:
   schedule:
-    # Every 10 minutes. NOTE: GitHub schedules are best-effort and can be
-    # delayed by several minutes under load (especially on the free tier).
-    - cron: '*/10 * * * *'
-  workflow_dispatch: {}   # lets you run it manually from the Actions tab
+    # Fallback safety net only (hourly). GitHub's scheduled runs are best-effort and
+    # heavily throttled — often delayed by 1-3 hours — so they are NOT relied on for
+    # the ~10-minute cadence. An external cron service (e.g. cron-job.org) drives the
+    # real cadence by calling the workflow_dispatch API below every 10 minutes.
+    - cron: '0 * * * *'
+  workflow_dispatch: {}   # triggered by the external cron (and manual runs)
 
 # Allow the workflow to commit the updated state file back to the repo.
 permissions:
