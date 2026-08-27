@@ -87,9 +87,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function sendTelegram(html, replyMarkup) {
   if (!TOKEN || !CHAT) {
-    console.log('[telegram] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — printing instead:\n' + html + '\n');
-    if (replyMarkup) console.log('[telegram] (button) ' + JSON.stringify(replyMarkup) + '\n');
-    return;
+    throw new Error('Telegram credentials are missing');
   }
   const payload = {
     chat_id: CHAT,
@@ -132,6 +130,7 @@ function whatsappButton(t) {
 // ---------- scraping ----------
 
 async function scrapeKeyword(browser, keyword) {
+  const safeKeywordId = keyId(keyword);
   const url =
     'https://twitterwebviewer.com/twitter-search?q=' +
     encodeURIComponent(keyword) +
@@ -155,12 +154,12 @@ async function scrapeKeyword(browser, keyword) {
         await page.waitForSelector('a[href*="/status/"]', { timeout: 30000 });
         loaded = true;
       } catch {
-        console.warn(`[${keyword}] attempt ${attempt}/${MAX_ATTEMPTS}: no tweets yet`);
+        console.warn(`[${safeKeywordId}] attempt ${attempt}/${MAX_ATTEMPTS}: no tweets yet`);
         if (attempt < MAX_ATTEMPTS) await page.waitForTimeout(4000 * attempt);
       }
     }
     if (!loaded) {
-      console.warn(`[${keyword}] gave up after ${MAX_ATTEMPTS} attempts (block, slow, or no results)`);
+      console.warn(`[${safeKeywordId}] gave up after ${MAX_ATTEMPTS} attempts (block, slow, or no results)`);
       return [];
     }
     await page.waitForTimeout(1500); // let the list settle
