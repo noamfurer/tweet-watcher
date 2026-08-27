@@ -11,6 +11,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'src/scrape.mjs'
       - 'src/netlify-sync.mjs'
       - '.github/workflows/watch.yml'
 
