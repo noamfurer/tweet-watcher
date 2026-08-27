@@ -8,10 +8,16 @@ on:
     # real cadence by calling the workflow_dispatch API below every 10 minutes.
     - cron: '0 * * * *'
   workflow_dispatch: {}   # triggered by the external cron (and manual runs)
+  push:
+    branches: [main]
+    paths:
+      - 'src/netlify-sync.mjs'
+      - '.github/workflows/watch.yml'
 
 # Allow the workflow to commit the updated state file back to the repo.
 permissions:
   contents: write
+  id-token: write
 
 # Never run two instances at once (they'd fight over state/seen.json).
 concurrency:
@@ -55,3 +61,6 @@ jobs:
             git pull --rebase --autostash || true
             git push || echo "push failed (state will be re-derived next run)"
           fi
+
+      - name: Sync Netlify board
+        run: node src/netlify-sync.mjs
