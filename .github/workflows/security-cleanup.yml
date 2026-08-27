@@ -1,0 +1,88 @@
+name: Purge historical Actions runs
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/security-cleanup.yml'
+  schedule:
+    - cron: '31 * * * *'
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: security-history-purge
+  cancel-in-progress: false
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Delete completed historical runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_PATH: .github/workflows/security-cleanup.yml
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t run_ids < <(
+            gh api --paginate               "repos/$REPOSITORY/actions/runs?status=completed&per_page=100"               --jq '.workflow_runs[].id'
+          )
+
+          deleted=0
+          consecutive_failures=0
+
+          for run_id in "${run_ids[@]}"; do
+            if [[ "$run_id" == "$CURRENT_RUN_ID" ]]; then
+              continue
+            fi
+
+            if gh api --silent -X DELETE "repos/$REPOSITORY/actions/runs/$run_id" 2>/dev/null; then
+              deleted=$((deleted + 1))
+              consecutive_failures=0
+            else
+              consecutive_failures=$((consecutive_failures + 1))
+              echo "A run changed concurrently or the API limit was reached."
+            fi
+
+            if (( deleted >= 750 || consecutive_failures >= 3 )); then
+              break
+            fi
+          done
+
+          echo "Deleted $deleted completed historical run(s) in this batch."
+
+          if ! remaining_ids="$(
+            gh api --paginate               "repos/$REPOSITORY/actions/runs?status=completed&per_page=100"               --jq '.workflow_runs[].id' 2>/dev/null
+          )"; then
+            echo "Could not verify the remaining count. The next hourly run will continue."
+            exit 0
+          fi
+
+          remaining=0
+          while IFS= read -r run_id; do
+            if [[ -n "$run_id" && "$run_id" != "$CURRENT_RUN_ID" ]]; then
+              remaining=$((remaining + 1))
+            fi
+          done <<< "$remaining_ids"
+
+          echo "$remaining completed historical run(s) remain visible to the API."
+
+          if (( remaining == 0 )); then
+            workflow_sha="$(
+              gh api "repos/$REPOSITORY/contents/$WORKFLOW_PATH" --jq '.sha'
+            )"
+
+            gh api --silent -X DELETE "repos/$REPOSITORY/contents/$WORKFLOW_PATH"               -f message='security: remove completed cleanup workflow'               -f sha="$workflow_sha"
+
+            echo "Cleanup finished. The temporary workflow removed itself."
+          else
+            echo "The next hourly run will continue the cleanup."
+          fi
