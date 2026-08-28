@@ -90,7 +90,9 @@ jobs:
                 if [[ "$run_id" == "$CURRENT_RUN_ID" ]]; then
                   continue
                 fi
-                if gh api --silent -X POST "repos/$REPOSITORY/actions/runs/$run_id/force-cancel" 2>/dev/null; then
+                if gh api --silent -X POST "repos/$REPOSITORY/actions/runs/$run_id/cancel" 2>/dev/null; then
+                  cancelled=$((cancelled + 1))
+                elif gh api --silent -X POST "repos/$REPOSITORY/actions/runs/$run_id/force-cancel" 2>/dev/null; then
                   cancelled=$((cancelled + 1))
                 fi
                 if (( cancelled >= 50 )); then
