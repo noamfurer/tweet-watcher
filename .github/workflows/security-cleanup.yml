@@ -8,6 +8,9 @@ on:
       - '.github/workflows/security-cleanup.yml'
   schedule:
     - cron: '31 * * * *'
+  workflow_run:
+    workflows: ['tweet-watcher']
+    types: [completed]
 
 permissions:
   actions: write
@@ -28,6 +31,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           CURRENT_RUN_ID: ${{ github.run_id }}
           WORKFLOW_PATH: .github/workflows/security-cleanup.yml
+          SECURITY_CUTOFF: '2026-08-27T19:54:02Z'
         shell: bash
         run: |
           set -euo pipefail
@@ -62,7 +66,7 @@ jobs:
           if ! remaining_ids="$(
             gh api --paginate               "repos/$REPOSITORY/actions/runs?status=completed&per_page=100"               --jq '.workflow_runs[].id' 2>/dev/null
           )"; then
-            echo "Could not verify the remaining count. The next hourly run will continue."
+            echo "Could not verify the remaining count. A later run will continue."
             exit 0
           fi
 
@@ -76,6 +80,27 @@ jobs:
           echo "$remaining completed historical run(s) remain visible to the API."
 
           if (( remaining == 0 )); then
+            mapfile -t stale_active_ids < <(
+              gh api --paginate                 "repos/$REPOSITORY/actions/runs?per_page=100"                 --jq ".workflow_runs[] | select((.status == \"queued\" or .status == \"in_progress\") and .created_at < \"$SECURITY_CUTOFF\") | .id"
+            )
+
+            if (( ${#stale_active_ids[@]} > 0 )); then
+              cancelled=0
+              for run_id in "${stale_active_ids[@]}"; do
+                if [[ "$run_id" == "$CURRENT_RUN_ID" ]]; then
+                  continue
+                fi
+                if gh api --silent -X POST "repos/$REPOSITORY/actions/runs/$run_id/force-cancel" 2>/dev/null; then
+                  cancelled=$((cancelled + 1))
+                fi
+                if (( cancelled >= 50 )); then
+                  break
+                fi
+              done
+              echo "Cancelled $cancelled stale pre-fix run(s). A later cleanup run will delete them."
+              exit 0
+            fi
+
             workflow_sha="$(
               gh api "repos/$REPOSITORY/contents/$WORKFLOW_PATH" --jq '.sha'
             )"
@@ -84,5 +109,5 @@ jobs:
 
             echo "Cleanup finished. The temporary workflow removed itself."
           else
-            echo "The next hourly run will continue the cleanup."
+            echo "A later run will continue the cleanup."
           fi
