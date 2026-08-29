@@ -1,0 +1,50 @@
+name: deploy-site
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/deploy-site.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-site-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+      NETLIFY_SITE_ID: 5a2852fc-e5e8-4f85-9c6e-3d0f8d687ed2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check deployment authorization
+        if: env.NETLIFY_AUTH_TOKEN == ''
+        run: echo "NETLIFY_AUTH_TOKEN is not configured; deployment skipped."
+
+      - uses: actions/setup-node@v4
+        if: env.NETLIFY_AUTH_TOKEN != ''
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install dependencies
+        if: env.NETLIFY_AUTH_TOKEN != ''
+        working-directory: site
+        run: npm ci
+
+      - name: Verify and build
+        if: env.NETLIFY_AUTH_TOKEN != ''
+        working-directory: site
+        run: npm run typecheck && npm run build
+
+      - name: Deploy production site
+        if: env.NETLIFY_AUTH_TOKEN != ''
+        run: npx --yes netlify-cli@latest deploy --prod --dir=site/dist --functions=site/netlify/functions --site="$NETLIFY_SITE_ID"
