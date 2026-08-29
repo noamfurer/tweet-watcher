@@ -10,6 +10,7 @@ const APIFY_MAX_CHARGE_USD = 0.0024;
 const APIFY_MAX_ITEMS = 120;
 const MIN_APIFY_WINDOW_MS = 12 * 60 * 1000;
 const MAX_APIFY_LOOKBACK_MS = 45 * 60 * 1000;
+const INITIAL_APIFY_BACKFILL_MS = 24 * 60 * 60 * 1000;
 const APIFY_LAG_MS = 60 * 1000;
 
 function isIsraelActivityWindow(now = new Date()) {
@@ -128,13 +129,13 @@ async function collectKeywordWatches(watches) {
   const now = Date.now();
   const untilMs = now - APIFY_LAG_MS;
   const savedEnd = Date.parse(state.apifyWindowEnd || '');
-  if (Number.isFinite(savedEnd) && untilMs - savedEnd < MIN_APIFY_WINDOW_MS) {
+  const forceBackfill = process.env.GITHUB_EVENT_NAME === 'push';
+  if (!forceBackfill && Number.isFinite(savedEnd) && untilMs - savedEnd < MIN_APIFY_WINDOW_MS) {
     return { results: [], windowEnd: null, skipped: true };
   }
-  const sinceMs = Math.max(
-    Number.isFinite(savedEnd) ? savedEnd : 0,
-    untilMs - MAX_APIFY_LOOKBACK_MS,
-  );
+  const sinceMs = forceBackfill
+    ? untilMs - INITIAL_APIFY_BACKFILL_MS
+    : Math.max(Number.isFinite(savedEnd) ? savedEnd : 0, untilMs - MAX_APIFY_LOOKBACK_MS);
   const since = apifyTime(new Date(sinceMs));
   const until = apifyTime(new Date(untilMs));
   const watchByTerm = new Map();
@@ -172,9 +173,11 @@ async function collectKeywordWatches(watches) {
   if (!Array.isArray(rows)) throw new Error('Apify returned an invalid response');
 
   const grouped = new Map(watches.map((watch) => [watch.id, []]));
+  let normalizedCount = 0;
   for (const row of rows) {
     const tweet = normalizeApifyTweet(row);
     if (!tweet) continue;
+    normalizedCount += 1;
     const matched = new Set(
       rowSearchTerms(row)
         .map((term) => watchByTerm.get(term))
@@ -185,7 +188,7 @@ async function collectKeywordWatches(watches) {
   }
 
   const total = [...grouped.values()].reduce((sum, items) => sum + items.length, 0);
-  console.log(`[apify] collected ${total} item(s) for ${watches.length} keyword watch(es)`);
+  console.log(`[apify] received ${rows.length} row(s), normalized ${normalizedCount}, attributed ${total} for ${watches.length} keyword watch(es)`);
   return {
     results: watches.map((watch) => ({ watchId: watch.id, tweets: grouped.get(watch.id) })),
     windowEnd: new Date(untilMs).toISOString(),
