@@ -114,7 +114,7 @@ function normalizeApifyTweet(row) {
   };
 }
 
-async function runApifySearch(searchTerm, token) {
+async function runApifySearch(query, since, until, token) {
   const url = new URL(`https://api.apify.com/v2/acts/${APIFY_ACTOR}/run-sync-get-dataset-items`);
   url.searchParams.set('clean', 'true');
   url.searchParams.set('timeout', '120');
@@ -129,7 +129,9 @@ async function runApifySearch(searchTerm, token) {
     },
     body: JSON.stringify({
       mode: 'search',
-      searchTerms: [searchTerm],
+      twitterContent: query,
+      since,
+      until,
       queryType: 'Latest',
       maxItems: APIFY_ITEMS_PER_KEYWORD,
       outputVariant: 'rich',
@@ -169,10 +171,9 @@ async function collectKeywordWatches(watches) {
 
   for (let offset = 0; offset < watches.length; offset += 3) {
     const batch = watches.slice(offset, offset + 3);
-    const settled = await Promise.allSettled(batch.map((watch) => {
-      const term = `${String(watch.query).trim()} since:${since} until:${until}`;
-      return runApifySearch(term, token);
-    }));
+    const settled = await Promise.allSettled(batch.map((watch) =>
+      runApifySearch(String(watch.query).trim(), since, until, token),
+    ));
     settled.forEach((outcome, batchIndex) => {
       const index = offset + batchIndex;
       const watch = batch[batchIndex];
