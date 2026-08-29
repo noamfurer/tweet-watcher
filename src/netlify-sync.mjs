@@ -1,10 +1,8 @@
-import { chromium } from 'playwright';
+import crypto from 'node:crypto';
 
 const ENDPOINT = 'https://tweetdeckbha.netlify.app/api/github-ingest';
 const AUDIENCE = 'urn:tweetdeckbha:github-ingest';
-const UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const UA = 'tweet-watcher/2.0 (+https://github.com/noamfurer/tweet-watcher)';
 
 function isIsraelActivityWindow(now = new Date()) {
   const parts = Object.fromEntries(
@@ -17,7 +15,7 @@ function isIsraelActivityWindow(now = new Date()) {
   );
   const day = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[parts.weekday] ?? 6;
   const hour = Number(parts.hour) % 24;
-  return (day <= 4 && hour >= 7 && hour < 23) || (day === 5 && hour >= 7 && hour < 16);
+  return (day <= 4 && hour >= 7 && hour < 23) || (day >= 5 && hour >= 7 && hour < 16);
 }
 
 async function oidcToken() {
@@ -46,66 +44,86 @@ async function callNetlify(method, body) {
   return payload;
 }
 
-async function scrapeWatch(browser, watch, index, total) {
-  const query = watch.type === 'user'
-    ? `from:${String(watch.query).replace(/^@/, '').replace(/^from:/i, '')}`
-    : String(watch.query);
-  const url =
-    'https://twitterwebviewer.com/twitter-search?q=' +
-    encodeURIComponent(query) +
-    '&type=tweets&sort=latest';
-  const context = await browser.newContext({
-    userAgent: UA,
-    locale: 'he-IL',
-    viewport: { width: 1280, height: 900 },
+function decodeXml(value = '') {
+  return value
+    .replace(/^<!\[CDATA\[|\]\]>$/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function field(xml, name) {
+  return decodeXml(xml.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, 'i'))?.[1] || '').trim();
+}
+
+function googleResultId(link) {
+  const hex = crypto.createHash('sha256').update(link, 'utf8').digest('hex').slice(0, 15);
+  return BigInt(`0x${hex}`).toString();
+}
+
+async function searchGoogleNews(query) {
+  const url = new URL('https://news.google.com/rss/search');
+  url.searchParams.set('q', `${query} site:x.com when:1d`);
+  url.searchParams.set('hl', 'en-IL');
+  url.searchParams.set('gl', 'IL');
+  url.searchParams.set('ceid', 'IL:en');
+  const response = await fetch(url, { headers: { 'user-agent': UA } });
+  if (!response.ok) throw new Error(`Google News returned ${response.status}`);
+  const xml = await response.text();
+  const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].map((match) => match[1]);
+  return items.flatMap((item) => {
+    const source = field(item, 'source').toLowerCase();
+    const link = field(item, 'link');
+    const rawTitle = field(item, 'title');
+    const body = rawTitle.replace(/\s+-\s+x\.com\s*$/i, '').trim();
+    const postedAt = new Date(field(item, 'pubDate'));
+    if (source !== 'x.com' || !link || !body || Number.isNaN(postedAt.getTime())) return [];
+    return [{
+      tweetId: googleResultId(link),
+      authorName: 'X via Google News',
+      handle: '@x.com',
+      body,
+      postedAt: postedAt.toISOString(),
+      media: false,
+      url: link,
+    }];
   });
-  const page = await context.newPage();
-  try {
-    let loaded = false;
-    for (let attempt = 1; attempt <= 2 && !loaded; attempt += 1) {
-      try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await page.waitForSelector('a[href*="/status/"]', { timeout: 30000 });
-        loaded = true;
-      } catch {
-        console.warn(`[board ${index + 1}/${total}] attempt ${attempt}/2 did not return tweets`);
-        if (attempt < 2) await page.waitForTimeout(4000);
-      }
-    }
-    if (!loaded) return { watchId: watch.id, error: 'source-unavailable' };
-    await page.waitForTimeout(1500);
-    const tweets = await page.evaluate(() => {
-      const out = [];
-      const seen = new Set();
-      for (const link of document.querySelectorAll('a[href*="/status/"]')) {
-        const match = link.href.match(/(?:x|twitter)\.com\/([^\/?#]+)\/status\/(\d+)/);
-        if (!match || seen.has(match[2])) continue;
-        seen.add(match[2]);
-        let element = link.parentElement;
-        let card = null;
-        for (let depth = 0; depth < 10 && element; depth += 1) {
-          if (element.querySelector('time')) { card = element; break; }
-          element = element.parentElement;
-        }
-        const time = card?.querySelector('time');
-        const body = card?.querySelector('p.whitespace-pre-wrap, p[class*="whitespace-pre-wrap"]');
-        out.push({
-          tweetId: match[2],
-          authorName: match[1],
-          handle: `@${match[1]}`,
-          body: body?.innerText.trim() || card?.innerText.replace(/\s+/g, ' ').trim().slice(0, 5000) || '',
-          postedAt: time?.getAttribute('datetime') || new Date().toISOString(),
-          media: Boolean(card?.querySelector('img, video')),
-          url: `https://x.com/${match[1]}/status/${match[2]}`,
-        });
-      }
-      return out;
-    });
-    console.log(`[board ${index + 1}/${total}] collected ${tweets.length} tweets`);
-    return { watchId: watch.id, tweets };
-  } finally {
-    await context.close();
+}
+
+async function fetchUserTimeline(rawHandle) {
+  const handle = String(rawHandle).replace(/^@/, '').replace(/^from:/i, '').trim();
+  if (!/^[A-Za-z0-9_]{1,15}$/.test(handle)) throw new Error('Invalid account watch');
+  const response = await fetch(`https://api.fxtwitter.com/2/profile/${encodeURIComponent(handle)}/statuses?count=100`, {
+    headers: { 'user-agent': UA },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (payload.code !== 200 || !Array.isArray(payload.results)) {
+    throw new Error(`FxTwitter returned ${payload.code || response.status}`);
   }
+  return payload.results.flatMap((post) => {
+    if (post?.type !== 'status' || !post.id || !post.url || !post.author) return [];
+    const screenName = String(post.author.screen_name || handle);
+    return [{
+      tweetId: String(post.id),
+      authorName: String(post.author.name || screenName),
+      handle: `@${screenName}`,
+      body: String(post.text || ''),
+      postedAt: new Date(Number(post.created_timestamp) * 1000).toISOString(),
+      media: Boolean(post.media?.all?.length || post.media?.photos?.length || post.media?.videos?.length),
+      url: String(post.url),
+    }];
+  });
+}
+
+async function collectWatch(watch, index, total) {
+  const isUser = watch.type === 'user';
+  const tweets = isUser
+    ? await fetchUserTimeline(watch.query)
+    : await searchGoogleNews(String(watch.query));
+  console.log(`[board ${index + 1}/${total}] collected ${tweets.length} item(s) via ${isUser ? 'account-feed' : 'news-index'}`);
+  return { watchId: watch.id, tweets };
 }
 
 async function main() {
@@ -119,17 +137,14 @@ async function main() {
     return;
   }
   console.log(`Syncing ${watches.length} private board watches.`);
-  const browser = await chromium.launch({
-    args: ['--no-sandbox', '--disable-blink-features=AutomationControlled'],
-  });
   const results = [];
-  try {
-    for (let index = 0; index < watches.length; index += 1) {
-      results.push(await scrapeWatch(browser, watches[index], index, watches.length));
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+  for (let index = 0; index < watches.length; index += 1) {
+    try {
+      results.push(await collectWatch(watches[index], index, watches.length));
+    } catch (error) {
+      console.warn(`[board ${index + 1}/${watches.length}] source unavailable: ${error.message}`);
+      results.push({ watchId: watches[index].id, error: 'source-unavailable' });
     }
-  } finally {
-    await browser.close();
   }
   const outcome = await callNetlify('POST', { results });
   console.log(`Netlify sync complete: checked=${outcome.checked}, inserted=${outcome.inserted}, failed=${outcome.failed}`);

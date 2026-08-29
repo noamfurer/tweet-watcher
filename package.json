@@ -1,13 +1,11 @@
 {
   "name": "tweet-watcher",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Watches twitterwebviewer.com search results for keywords and sends new tweets to a Telegram bot.",
+  "description": "Private X monitoring via FxTwitter account feeds and Google News RSS indexing.",
   "scripts": {
     "start": "node src/scrape.mjs"
   },
-  "dependencies": {
-    "playwright": "^1.48.0"
-  }
+  "dependencies": {}
 }
