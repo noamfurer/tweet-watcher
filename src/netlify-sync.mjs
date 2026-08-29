@@ -114,10 +114,36 @@ function normalizeApifyTweet(row) {
   };
 }
 
-function rowSearchTerms(row) {
-  const value = row?.searchTerms ?? row?.searchTerm;
-  if (Array.isArray(value)) return value.map(String);
-  return typeof value === 'string' ? [value] : [];
+async function runApifySearch(searchTerm, token) {
+  const url = new URL(`https://api.apify.com/v2/acts/${APIFY_ACTOR}/run-sync-get-dataset-items`);
+  url.searchParams.set('clean', 'true');
+  url.searchParams.set('timeout', '120');
+  url.searchParams.set('memory', '256');
+  url.searchParams.set('maxTotalChargeUsd', String(APIFY_MAX_CHARGE_USD));
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      'user-agent': UA,
+    },
+    body: JSON.stringify({
+      mode: 'search',
+      searchTerms: [searchTerm],
+      queryType: 'Latest',
+      maxItems: APIFY_ITEMS_PER_KEYWORD,
+      outputVariant: 'rich',
+      fieldStyle: 'camelCase',
+    }),
+    signal: AbortSignal.timeout(145_000),
+  });
+  if (!response.ok) throw new Error(`Apify returned HTTP ${response.status}`);
+  const rows = await response.json();
+  if (!Array.isArray(rows)) throw new Error('Apify returned an invalid response');
+  return {
+    rowCount: rows.length,
+    tweets: rows.map(normalizeApifyTweet).filter(Boolean),
+  };
 }
 
 async function collectKeywordWatches(watches) {
@@ -138,64 +164,34 @@ async function collectKeywordWatches(watches) {
     : Math.max(Number.isFinite(savedEnd) ? savedEnd : 0, untilMs - MAX_APIFY_LOOKBACK_MS);
   const since = apifyTime(new Date(sinceMs));
   const until = apifyTime(new Date(untilMs));
-  const watchByTerm = new Map();
-  const searchTerms = watches.map((watch) => {
-    const term = `${String(watch.query).trim()} since:${since} until:${until}`;
-    watchByTerm.set(term, watch);
-    return term;
-  });
+  const results = [];
+  let allSucceeded = true;
 
-  const url = new URL(`https://api.apify.com/v2/acts/${APIFY_ACTOR}/run-sync-get-dataset-items`);
-  url.searchParams.set('clean', 'true');
-  url.searchParams.set('timeout', '120');
-  url.searchParams.set('memory', '256');
-  url.searchParams.set('maxTotalChargeUsd', String(APIFY_MAX_CHARGE_USD));
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${token}`,
-      'content-type': 'application/json',
-      'user-agent': UA,
-    },
-    body: JSON.stringify({
-      mode: 'search',
-      searchTerms,
-      queryType: 'Latest',
-      includeSearchTerms: true,
-      maxItems: watches.length * APIFY_ITEMS_PER_KEYWORD,
-      maxItemsPerTarget: APIFY_ITEMS_PER_KEYWORD,
-      outputVariant: 'rich',
-      fieldStyle: 'camelCase',
-    }),
-    signal: AbortSignal.timeout(145_000),
-  });
-  if (!response.ok) throw new Error(`Apify returned HTTP ${response.status}`);
-  const rows = await response.json();
-  if (!Array.isArray(rows)) throw new Error('Apify returned an invalid response');
-
-  const grouped = new Map(watches.map((watch) => [watch.id, []]));
-  let normalizedCount = 0;
-  for (const row of rows) {
-    const tweet = normalizeApifyTweet(row);
-    if (!tweet) continue;
-    normalizedCount += 1;
-    const matched = new Set(
-      rowSearchTerms(row)
-        .map((term) => watchByTerm.get(term))
-        .filter(Boolean),
-    );
-    if (matched.size === 0 && watches.length === 1) matched.add(watches[0]);
-    for (const watch of matched) grouped.get(watch.id).push(tweet);
+  for (let offset = 0; offset < watches.length; offset += 3) {
+    const batch = watches.slice(offset, offset + 3);
+    const settled = await Promise.allSettled(batch.map((watch) => {
+      const term = `${String(watch.query).trim()} since:${since} until:${until}`;
+      return runApifySearch(term, token);
+    }));
+    settled.forEach((outcome, batchIndex) => {
+      const index = offset + batchIndex;
+      const watch = batch[batchIndex];
+      if (outcome.status === 'fulfilled') {
+        console.log(`[keyword ${index + 1}/${watches.length}] received ${outcome.value.rowCount} row(s), normalized ${outcome.value.tweets.length}`);
+        results.push({ watchId: watch.id, tweets: outcome.value.tweets });
+      } else {
+        allSucceeded = false;
+        console.warn(`[keyword ${index + 1}/${watches.length}] Apify source unavailable`);
+        results.push({ watchId: watch.id, error: 'source-unavailable' });
+      }
+    });
   }
 
-  const total = [...grouped.values()].reduce((sum, items) => sum + items.length, 0);
-  console.log(`[apify] received ${rows.length} row(s), normalized ${normalizedCount}, attributed ${total} for ${watches.length} keyword watch(es)`);
-  watches.forEach((watch, index) => {
-    console.log(`[keyword ${index + 1}/${watches.length}] attributed ${grouped.get(watch.id).length} item(s)`);
-  });
+  const total = results.reduce((sum, result) => sum + (result.tweets?.length || 0), 0);
+  console.log(`[apify] collected ${total} item(s) across ${watches.length} isolated keyword search(es)`);
   return {
-    results: watches.map((watch) => ({ watchId: watch.id, tweets: grouped.get(watch.id) })),
-    windowEnd: new Date(untilMs).toISOString(),
+    results,
+    windowEnd: allSucceeded ? new Date(untilMs).toISOString() : null,
     skipped: false,
   };
 }
