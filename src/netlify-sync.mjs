@@ -127,7 +127,9 @@ async function collectWatch(watch, index, total) {
 }
 
 async function main() {
-  if (!isIsraelActivityWindow()) {
+  // A push run is a one-time deployment verification. Regular scheduled and
+  // externally-dispatched runs continue to obey the Israel activity window.
+  if (!isIsraelActivityWindow() && process.env.GITHUB_EVENT_NAME !== 'push') {
     console.log('Outside Israel activity window; Netlify sync skipped.');
     return;
   }
