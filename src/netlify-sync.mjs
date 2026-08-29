@@ -7,7 +7,7 @@ const UA = 'tweet-watcher/3.0 (+https://github.com/noamfurer/tweet-watcher)';
 const APIFY_ACTOR = 'xquik~x-tweet-scraper';
 const APIFY_STATE_PATH = 'state/netlify-board-sync.json';
 const APIFY_MAX_CHARGE_USD = 0.0024;
-const APIFY_MAX_ITEMS = 120;
+const APIFY_ITEMS_PER_KEYWORD = 2;
 const MIN_APIFY_WINDOW_MS = 12 * 60 * 1000;
 const MAX_APIFY_LOOKBACK_MS = 45 * 60 * 1000;
 const INITIAL_APIFY_BACKFILL_MS = 24 * 60 * 60 * 1000;
@@ -162,7 +162,8 @@ async function collectKeywordWatches(watches) {
       searchTerms,
       queryType: 'Latest',
       includeSearchTerms: true,
-      maxItems: APIFY_MAX_ITEMS,
+      maxItems: watches.length * APIFY_ITEMS_PER_KEYWORD,
+      maxItemsPerTarget: APIFY_ITEMS_PER_KEYWORD,
       outputVariant: 'rich',
       fieldStyle: 'camelCase',
     }),
@@ -189,6 +190,9 @@ async function collectKeywordWatches(watches) {
 
   const total = [...grouped.values()].reduce((sum, items) => sum + items.length, 0);
   console.log(`[apify] received ${rows.length} row(s), normalized ${normalizedCount}, attributed ${total} for ${watches.length} keyword watch(es)`);
+  watches.forEach((watch, index) => {
+    console.log(`[keyword ${index + 1}/${watches.length}] attributed ${grouped.get(watch.id).length} item(s)`);
+  });
   return {
     results: watches.map((watch) => ({ watchId: watch.id, tweets: grouped.get(watch.id) })),
     windowEnd: new Date(untilMs).toISOString(),
