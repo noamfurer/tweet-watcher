@@ -47,4 +47,5 @@ jobs:
 
       - name: Deploy production site
         if: env.NETLIFY_AUTH_TOKEN != ''
-        run: npx --yes netlify-cli@latest deploy --prod --dir=site/dist --functions=site/netlify/functions --site="$NETLIFY_SITE_ID"
+        working-directory: site
+        run: npx --yes netlify-cli@latest deploy --prod --dir=dist --functions=netlify/functions --site="$NETLIFY_SITE_ID"
