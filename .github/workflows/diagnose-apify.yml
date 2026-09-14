@@ -32,6 +32,16 @@ jobs:
               signal: AbortSignal.timeout(20000),
             });
             console.log('DIAGNOSTIC APIFY_LIMITS_HTTP_STATUS=' + response.status);
+            if (!response.ok) {
+              const failure = await response.json().catch(() => ({}));
+              const type = failure?.error?.type;
+              const knownTypes = new Set(['invalid-token', 'token-not-valid', 'token-not-provided', 'token-expired', 'unauthorized', 'insufficient-permissions', 'forbidden']);
+              console.log('DIAGNOSTIC APIFY_AUTH_ERROR_TYPE=' + (knownTypes.has(type) ? type : 'unclassified'));
+              const message = String(failure?.error?.message || '').toLowerCase();
+              console.log('DIAGNOSTIC EXPIRED_TOKEN_MESSAGE=' + /token.*expir|expir.*token/.test(message));
+              console.log('DIAGNOSTIC INVALID_TOKEN_MESSAGE=' + /token.*(?:invalid|not valid)|invalid.*token/.test(message));
+              console.log('DIAGNOSTIC PERMISSION_MESSAGE=' + /permission|scope/.test(message));
+            }
             if (response.ok) {
               const { data } = await response.json();
               const limits = data?.limits || {};
