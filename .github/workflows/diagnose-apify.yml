@@ -1,0 +1,55 @@
+name: Diagnose Apify access (read only)
+
+on:
+  push:
+    branches: [codex/diagnose-apify-20260914]
+    paths: ['.github/workflows/diagnose-apify.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check Apify authorization and limit flags
+        env:
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+        run: |
+          node --input-type=module <<'NODE'
+          const token = process.env.APIFY_TOKEN;
+          if (!token) {
+            console.log('DIAGNOSTIC APIFY_TOKEN_CONFIGURED=false');
+            process.exit(0);
+          }
+          console.log('DIAGNOSTIC APIFY_TOKEN_CONFIGURED=true');
+          try {
+            const response = await fetch('https://api.apify.com/v2/users/me/limits', {
+              method: 'GET',
+              headers: { authorization: `Bearer ${token}` },
+              redirect: 'error',
+              signal: AbortSignal.timeout(20000),
+            });
+            console.log('DIAGNOSTIC APIFY_LIMITS_HTTP_STATUS=' + response.status);
+            if (response.ok) {
+              const { data } = await response.json();
+              const limits = data?.limits || {};
+              const current = data?.current || {};
+              const checks = [
+                ['MONTHLY_USAGE_LIMIT_REACHED', 'monthlyUsageUsd', 'maxMonthlyUsageUsd'],
+                ['COMPUTE_LIMIT_REACHED', 'monthlyActorComputeUnits', 'maxMonthlyActorComputeUnits'],
+                ['MEMORY_LIMIT_REACHED', 'actorMemoryGbytes', 'maxActorMemoryGbytes'],
+                ['CONCURRENCY_LIMIT_REACHED', 'activeActorJobCount', 'maxConcurrentActorJobs'],
+              ];
+              for (const [label, currentKey, maxKey] of checks) {
+                const value = current[currentKey], max = limits[maxKey];
+                const result = typeof value === 'number' && typeof max === 'number'
+                  ? value >= max : 'unknown';
+                console.log('DIAGNOSTIC ' + label + '=' + result);
+              }
+            }
+          } catch {
+            console.log('DIAGNOSTIC APIFY_LIMITS_REQUEST_FAILED=true');
+          }
+          NODE
