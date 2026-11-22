@@ -5,6 +5,7 @@ import {
   ChevronRight,
   ExternalLink,
   Image as ImageIcon,
+  KeyRound,
   Lock,
   LogOut,
   Pencil,
@@ -15,7 +16,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { Board, SortMode, TweetRow, WatchDraft, WatchRow } from "./types";
+import type { ApifySettings, Board, SortMode, TweetRow, WatchDraft, WatchRow } from "./types";
 
 const EMPTY: Board = { watches: [], tweets: [], runStatus: null };
 
@@ -137,7 +138,7 @@ function Monitor({ onLock }: { onLock: () => void }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [view, setView] = useState<"deck" | "manage">("deck");
+  const [view, setView] = useState<"deck" | "manage" | "settings">("deck");
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortMode>("newest");
   const [mobileIndex, setMobileIndex] = useState(0);
@@ -292,6 +293,7 @@ function Monitor({ onLock }: { onLock: () => void }) {
           <div className="tabs">
             <button className={view === "deck" ? "active" : ""} onClick={() => setView("deck")}>לוח</button>
             <button className={view === "manage" ? "active" : ""} onClick={() => setView("manage")}>ניהול מעקבים</button>
+            <button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>הגדרות</button>
           </div>
         </div>
         <div className="toolbar">
@@ -328,6 +330,8 @@ function Monitor({ onLock }: { onLock: () => void }) {
 
       {loading ? (
         <div className="empty-state">טוען את לוח המעקב...</div>
+      ) : view === "settings" ? (
+        <Settings />
       ) : view === "manage" ? (
         <Manage
           watches={board.watches}
@@ -388,7 +392,7 @@ function ColumnCard({
         <div className="column-query">{column.query}</div>
         <div className="column-meta">
           {column.active ? `נבדק ${ago(now, column.lastCheck)}` : "המעקב מושהה"}
-          {column.lastError && <span className="danger">בעיה זמנית בשאיבה</span>}
+          {column.lastError && <span className="danger" title={column.lastError}>בעיה זמנית בשאיבה</span>}
         </div>
         <div className="column-actions">
           <button onClick={() => void onCheck(column.id)}><RefreshCw size={13} /> בדיקה</button>
@@ -513,5 +517,154 @@ function WatchDialog({
         </div>
       </section>
     </div>
+  );
+}
+
+type ApifyUsage = { username: string | null; usageUsd: number | null; limitUsd: number | null };
+type SettingsResult = ApifySettings & { usage?: ApifyUsage };
+
+const ERROR_TEXT: Record<string, string> = {
+  "apify-auth": "Apify דחה את המפתח",
+  "apify-credit": "נגמר הקרדיט החודשי בחשבון Apify",
+  "apify-error": "Apify החזיר שגיאה",
+  "source-unavailable": "Apify לא היה זמין",
+};
+
+const SOURCE_TEXT: Record<string, string> = {
+  site: "המפתח שנשמר כאן",
+  "github-secret": "המפתח שמוגדר ב-GitHub",
+  none: "לא הוגדר מפתח",
+};
+
+function usageText(usage?: ApifyUsage) {
+  if (!usage || usage.usageUsd === null) return "";
+  const used = `$${usage.usageUsd.toFixed(2)}`;
+  return usage.limitUsd ? `ניצול החודש: ${used} מתוך $${usage.limitUsd.toFixed(2)}` : `ניצול החודש: ${used}`;
+}
+
+function Settings() {
+  const [settings, setSettings] = useState<SettingsResult | null>(null);
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+
+  const call = useCallback(async (action: string, payload: Record<string, unknown> = {}) => {
+    return request<SettingsResult>("/api/board", {
+      method: "POST",
+      body: JSON.stringify({ action, payload }),
+    });
+  }, []);
+
+  useEffect(() => {
+    call("getApifySettings")
+      .then(setSettings)
+      .catch((e) => setMessage({ kind: "error", text: e instanceof Error ? e.message : "טעינת ההגדרות נכשלה" }));
+  }, [call]);
+
+  async function run(action: string, payload: Record<string, unknown>, success: (result: SettingsResult) => string) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const result = await call(action, payload);
+      setSettings(result);
+      setMessage({ kind: "ok", text: success(result) });
+      return true;
+    } catch (e) {
+      setMessage({ kind: "error", text: e instanceof Error ? e.message : "הפעולה נכשלה" });
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    const ok = await run("saveApifyToken", { token }, (result) =>
+      [`המפתח נבדק ונשמר${result.username ? ` (חשבון ${result.username})` : ""}.`, usageText(result.usage), "הוא ישמש החל מהבדיקה האוטומטית הבאה."]
+        .filter(Boolean).join(" "));
+    if (ok) setToken("");
+  }
+
+  const lastRun = settings?.lastRun;
+
+  return (
+    <section className="manage-card settings-card">
+      <div className="manage-head">
+        <div>
+          <h2>הגדרות</h2>
+          <p>מפתח ה-API של Apify, שמשמש לחיפוש מילות המפתח ב-X</p>
+        </div>
+      </div>
+
+      <div className="settings-body">
+        <div className="settings-status">
+          <div>
+            <span>מפתח פעיל</span>
+            <b>
+              {!settings ? "טוען..." : settings.configured
+                ? `נשמר באתר, מסתיים ב-${settings.last4}`
+                : "לא נשמר באתר (משתמש במפתח שמוגדר ב-GitHub, אם יש)"}
+            </b>
+            {settings?.configured && settings.updatedAt ? (
+              <small>עודכן {dateIL(settings.updatedAt)} · {timeIL(settings.updatedAt)}{settings.username ? ` · חשבון ${settings.username}` : ""}</small>
+            ) : null}
+          </div>
+          <div>
+            <span>ההרצה האחרונה של Apify</span>
+            {lastRun ? (
+              <>
+                <b className={lastRun.ok ? "ok-text" : "danger"}>
+                  {lastRun.ok ? "תקינה" : ERROR_TEXT[lastRun.code ?? ""] ?? "נכשלה"}
+                </b>
+                <small>{dateIL(lastRun.at)} · {timeIL(lastRun.at)} · {SOURCE_TEXT[lastRun.source] ?? lastRun.source}</small>
+              </>
+            ) : (
+              <b>אין עדיין נתונים</b>
+            )}
+          </div>
+        </div>
+
+        <form className="settings-form" onSubmit={save}>
+          <label htmlFor="apify-token">מפתח חדש</label>
+          <div className="settings-row">
+            <input
+              id="apify-token"
+              type="password"
+              dir="ltr"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="apify_api_..."
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+            />
+            <button className="button brand" disabled={busy || !token.trim()}>
+              <KeyRound size={15} /> {busy ? "בודק..." : "בדיקה ושמירה"}
+            </button>
+          </div>
+          <p className="settings-hint">
+            את המפתח מעתיקים ב-Apify Console, תחת Settings → API &amp; Integrations.
+            לפני השמירה המפתח נבדק מול Apify, ונשמר מוצפן בשרת. אחרי השמירה הוא לא מוצג שוב, רק 4 התווים האחרונים שלו.
+          </p>
+        </form>
+
+        {message && <div className={message.kind === "ok" ? "notice inline" : "error-banner inline"}>{message.text}</div>}
+
+        {settings?.configured && (
+          <div className="settings-actions">
+            <button className="button ghost" disabled={busy} onClick={() => void run("testApifyToken", {}, (result) =>
+              [`המפתח תקין${result.usage?.username ? ` (חשבון ${result.usage.username})` : ""}.`, usageText(result.usage)].filter(Boolean).join(" "))}>
+              <Check size={15} /> בדיקת המפתח השמור
+            </button>
+            <button className="button ghost danger" disabled={busy} onClick={() => {
+              if (confirm("למחוק את המפתח השמור? המערכת תחזור להשתמש במפתח שמוגדר ב-GitHub.")) {
+                void run("clearApifyToken", {}, () => "המפתח נמחק מהאתר.");
+              }
+            }}>
+              <Trash2 size={15} /> מחיקת המפתח השמור
+            </button>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }

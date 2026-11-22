@@ -11,6 +11,14 @@ import {
   type StoredWatch,
   type WatchType,
 } from "./_shared/storage.mts";
+import {
+  cleanToken,
+  clearApifyToken,
+  inspectApifyToken,
+  publicApifySettings,
+  readApifyToken,
+  saveApifyToken,
+} from "./_shared/apify-settings.mts";
 
 type Payload = Record<string, unknown>;
 
@@ -99,6 +107,29 @@ export default async (request: Request, _context: Context) => {
       const tweets = await readTweets();
       await writeTweets(tweets.map((tweet) => !watchId || tweet.w === watchId ? { ...tweet, unread: payload.unread === true } : tweet));
       return json({ ok: true });
+    }
+
+    if (action === "getApifySettings") {
+      return json(await publicApifySettings());
+    }
+
+    if (action === "saveApifyToken") {
+      const token = cleanToken(payload.token);
+      const info = await inspectApifyToken(token);
+      await saveApifyToken(token, info.username);
+      return json({ ...(await publicApifySettings()), usage: info });
+    }
+
+    if (action === "testApifyToken") {
+      const token = await readApifyToken();
+      if (!token) return json({ error: "לא נשמר מפתח באתר. המערכת משתמשת במפתח שמוגדר ב-GitHub, אם יש כזה." }, 400);
+      const info = await inspectApifyToken(token);
+      return json({ ...(await publicApifySettings()), usage: info });
+    }
+
+    if (action === "clearApifyToken") {
+      await clearApifyToken();
+      return json(await publicApifySettings());
     }
 
     if (action === "runCheck") {

@@ -48,3 +48,17 @@ export interface WatchDraft {
   exclude: string;
   active: boolean;
 }
+
+export interface ApifySettings {
+  configured: boolean;
+  last4: string | null;
+  updatedAt: number | null;
+  username: string | null;
+  lastRun: {
+    at: number;
+    source: "site" | "github-secret" | "none";
+    ok: boolean;
+    code: string | null;
+    detail: string | null;
+  } | null;
+}

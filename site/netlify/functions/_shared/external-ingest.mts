@@ -9,6 +9,7 @@ import {
   writeWatches,
   type StoredTweet,
 } from "./storage.mts";
+import { apifyErrorMessage } from "./apify-settings.mts";
 
 export interface ExternalTweet {
   tweetId: string;
@@ -69,7 +70,7 @@ export async function ingestExternalResults(input: ExternalWatchResult[]) {
         failed += 1;
         updates.set(watch.id, {
           lastCheck: Date.now(),
-          lastError: "TwitterWebViewer לא היה זמין בהרצת GitHub האחרונה; יתבצע ניסיון נוסף",
+          lastError: apifyErrorMessage(result.error),
         });
         continue;
       }

@@ -114,6 +114,28 @@ function normalizeApifyTweet(row) {
   };
 }
 
+class ApifyError extends Error {
+  constructor(status, type, message) {
+    super(`Apify returned HTTP ${status}${type ? ` (${type})` : ''}`);
+    this.status = status;
+    this.type = type;
+    this.detail = message;
+  }
+
+  get code() {
+    const text = `${this.type} ${this.detail}`;
+    if (/usage|limit|credit|balance|paid|payment|insufficient|exceeded/i.test(text) || this.status === 402) {
+      return 'apify-credit';
+    }
+    if (this.status === 401 || this.status === 403 || /token|auth/i.test(this.type)) return 'apify-auth';
+    return 'apify-error';
+  }
+}
+
+function errorCode(error) {
+  return error instanceof ApifyError ? error.code : 'apify-error';
+}
+
 async function runApifySearch(query, token) {
   const url = new URL(`https://api.apify.com/v2/acts/${APIFY_ACTOR}/run-sync-get-dataset-items`);
   url.searchParams.set('clean', 'true');
@@ -137,7 +159,12 @@ async function runApifySearch(query, token) {
     }),
     signal: AbortSignal.timeout(145_000),
   });
-  if (!response.ok) throw new Error(`Apify returned HTTP ${response.status}`);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    const type = String(payload?.error?.type || '');
+    const message = String(payload?.error?.message || '');
+    throw new ApifyError(response.status, type, message);
+  }
   const rows = await response.json();
   if (!Array.isArray(rows)) throw new Error('Apify returned an invalid response');
   return {
@@ -146,10 +173,8 @@ async function runApifySearch(query, token) {
   };
 }
 
-async function collectKeywordWatches(watches) {
-  if (watches.length === 0) return { results: [], windowEnd: null, skipped: false };
-  const token = process.env.APIFY_TOKEN;
-  if (!token) throw new Error('APIFY_TOKEN is not configured');
+async function collectKeywordWatches(watches, token) {
+  if (watches.length === 0) return { results: [], windowEnd: null, skipped: false, errors: [] };
 
   const state = await loadJson(APIFY_STATE_PATH, {});
   const now = Date.now();
@@ -157,7 +182,7 @@ async function collectKeywordWatches(watches) {
   const savedEnd = Date.parse(state.apifyWindowEnd || '');
   const forceBackfill = process.env.GITHUB_EVENT_NAME === 'push';
   if (!forceBackfill && Number.isFinite(savedEnd) && untilMs - savedEnd < MIN_APIFY_WINDOW_MS) {
-    return { results: [], windowEnd: null, skipped: true };
+    return { results: [], windowEnd: null, skipped: true, errors: [] };
   }
   const sinceMs = forceBackfill
     ? untilMs - INITIAL_APIFY_BACKFILL_MS
@@ -165,6 +190,7 @@ async function collectKeywordWatches(watches) {
   const since = apifyTime(new Date(sinceMs));
   const until = apifyTime(new Date(untilMs));
   const results = [];
+  const errors = [];
   let allSucceeded = true;
 
   for (let offset = 0; offset < watches.length; offset += 3) {
@@ -180,8 +206,10 @@ async function collectKeywordWatches(watches) {
         results.push({ watchId: watch.id, tweets: outcome.value.tweets });
       } else {
         allSucceeded = false;
-        console.warn(`[keyword ${index + 1}/${watches.length}] Apify source unavailable`);
-        results.push({ watchId: watch.id, error: 'source-unavailable' });
+        const code = errorCode(outcome.reason);
+        errors.push(outcome.reason);
+        console.warn(`[keyword ${index + 1}/${watches.length}] Apify failed: ${code} ${outcome.reason?.message || ''}`);
+        results.push({ watchId: watch.id, error: code });
       }
     });
   }
@@ -192,6 +220,7 @@ async function collectKeywordWatches(watches) {
     results,
     windowEnd: allSucceeded ? new Date(untilMs).toISOString() : null,
     skipped: false,
+    errors,
   };
 }
 
@@ -200,7 +229,12 @@ async function main() {
     console.log('Outside Israel activity window; Netlify sync skipped.');
     return;
   }
-  const { watches = [] } = await callNetlify('GET');
+  const { watches = [], apifyToken: siteToken = null } = await callNetlify('GET');
+  // The key saved in the site's settings wins; the GitHub secret is the fallback.
+  const token = siteToken || process.env.APIFY_TOKEN || null;
+  const tokenSource = siteToken ? 'site' : process.env.APIFY_TOKEN ? 'github-secret' : 'none';
+  if (siteToken) console.log(`::add-mask::${siteToken}`);
+  console.log(`[apify] using key from: ${tokenSource}`);
   if (!Array.isArray(watches) || watches.length === 0) {
     console.log('No active board watches.');
     return;
@@ -211,16 +245,29 @@ async function main() {
   const userWatches = watches.filter((watch) => watch.type === 'user');
   const results = [];
   let apifyWindowEnd = null;
-  try {
-    const keywordBatch = await collectKeywordWatches(keywordWatches);
-    results.push(...keywordBatch.results);
-    apifyWindowEnd = keywordBatch.windowEnd;
-    if (keywordBatch.skipped) {
-      console.log('[apify] recent window already processed; skipped duplicate run');
+  let apifyReport = null;
+  if (keywordWatches.length > 0 && !token) {
+    console.warn('[apify] no key configured (site settings or APIFY_TOKEN secret)');
+    results.push(...keywordWatches.map((watch) => ({ watchId: watch.id, error: 'apify-missing' })));
+    apifyReport = { source: 'none', ok: false, code: 'apify-auth', detail: 'No Apify key configured' };
+  } else {
+    try {
+      const keywordBatch = await collectKeywordWatches(keywordWatches, token);
+      results.push(...keywordBatch.results);
+      apifyWindowEnd = keywordBatch.windowEnd;
+      if (keywordBatch.skipped) {
+        console.log('[apify] recent window already processed; skipped duplicate run');
+      } else if (keywordWatches.length > 0) {
+        const first = keywordBatch.errors[0];
+        apifyReport = first
+          ? { source: tokenSource, ok: false, code: errorCode(first), detail: first.message }
+          : { source: tokenSource, ok: true };
+      }
+    } catch (error) {
+      console.warn(`[apify] source unavailable: ${error.message}`);
+      results.push(...keywordWatches.map((watch) => ({ watchId: watch.id, error: errorCode(error) })));
+      apifyReport = { source: tokenSource, ok: false, code: errorCode(error), detail: error.message };
     }
-  } catch (error) {
-    console.warn(`[apify] source unavailable: ${error.message}`);
-    results.push(...keywordWatches.map((watch) => ({ watchId: watch.id, error: 'source-unavailable' })));
   }
 
   for (let index = 0; index < userWatches.length; index += 1) {
@@ -231,12 +278,12 @@ async function main() {
       results.push({ watchId: watch.id, tweets });
     } catch (error) {
       console.warn(`[account ${index + 1}/${userWatches.length}] source unavailable: ${error.message}`);
-      results.push({ watchId: watch.id, error: 'source-unavailable' });
+      results.push({ watchId: watch.id, error: 'account-unavailable' });
     }
   }
 
   if (results.length === 0) return;
-  const outcome = await callNetlify('POST', { results });
+  const outcome = await callNetlify('POST', { results, ...(apifyReport ? { apify: apifyReport } : {}) });
   if (apifyWindowEnd) {
     await saveJson(APIFY_STATE_PATH, { version: 1, apifyWindowEnd });
   }

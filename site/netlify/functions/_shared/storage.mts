@@ -80,12 +80,12 @@ async function decrypt<T>(text: string): Promise<T> {
   return JSON.parse(plaintext.toString("utf8")) as T;
 }
 
-async function readEncrypted<T>(key: string, fallback: T): Promise<T> {
+export async function readEncrypted<T>(key: string, fallback: T): Promise<T> {
   const value = await store().get(key, { type: "text" });
   return value ? await decrypt<T>(value) : fallback;
 }
 
-async function writeEncrypted(key: string, value: unknown) {
+export async function writeEncrypted(key: string, value: unknown) {
   await store().set(key, await encrypt(value), { metadata: { encrypted: true, version: 1 } });
 }
 
